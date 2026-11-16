@@ -7,6 +7,7 @@ Drag it sideways to move it. Click it to refresh.
 
 import csv
 import ctypes
+import gzip
 import json
 import os
 import shutil
@@ -14,15 +15,19 @@ import sys
 import threading
 import time
 import tkinter as tk
+import tkinter.font as tkfont
 import traceback
 import urllib.request
+import webbrowser
 import winreg
 from concurrent.futures import ThreadPoolExecutor
 from ctypes import wintypes
 
-from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
+from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont, ImageTk
 
+__version__ = "1.3.0"
 APP = "Trainbar"
+HOMEPAGE = "https://github.com/thedevmark/trainbar"
 DATA_DIR = os.path.join(os.environ["APPDATA"], APP)
 CONFIG_PATH = os.path.join(DATA_DIR, "config.json")
 STATIONS_PATH = os.path.join(DATA_DIR, "stations.csv")
@@ -80,7 +85,18 @@ def font(weight, px):
     return _fonts[key]
 
 
+_theme_cache = [0.0, False]
+
+
 def light_theme():
+    """Windows light/dark setting, cached briefly because every frame asks."""
+    now = time.monotonic()
+    if now - _theme_cache[0] > 3:
+        _theme_cache[:] = [now, _read_light_theme()]
+    return _theme_cache[1]
+
+
+def _read_light_theme():
     try:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
                             r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize") as k:
@@ -126,10 +142,14 @@ class Painter:
                                               fill=255), color, opacity)
         label = "S" if route in ("SIR", "H") else route[0]
         ink = (0, 0, 0) if route[0] in DARK_LETTER else (255, 255, 255)
-        f = font("Bold", round(d * 0.62))
+        ss = 4
+        f = font("Bold", round(d * 0.6 * ss))
         # Centre the letter on its actual outline, not on the font's line box.
         l, t, r_, b = f.getbbox(label, anchor="ls")
-        self.text((cx - (l + r_) / 2, cy - (t + b) / 2), label, f, ink, opacity, "ls", shadow=False)
+        big = Image.new("L", (self.w * ss, self.h * ss), 0)
+        ImageDraw.Draw(big).text((cx * ss - (l + r_) / 2, cy * ss - (t + b) / 2), label, font=f, fill=255,
+                                 anchor="ls")
+        self.add(big.resize((self.w, self.h), Image.LANCZOS), ink, opacity, False)
 
     def compose(self, shadow_strength):
         out = Image.new("RGBA", (self.w, self.h), (0, 0, 0, 0))
@@ -147,6 +167,19 @@ class Painter:
             layer.putalpha(m if op >= 1 else m.point(lambda v, op=op: int(v * op)))
             out.alpha_composite(layer)
         return out
+
+
+def app_icon(size):
+    """The Trainbar icon: a subway-style bullet with a T."""
+    p = Painter(size, size)
+    blue = (0, 57, 166)
+    p.bullet("T", size / 2, size / 2, size * 0.94, colors={"T": blue, "S": blue})
+    return p.compose(0)
+
+
+def write_ico(path):
+    """Used by the release build: python -c "import ...; write_ico('trainbar.ico')"."""
+    app_icon(256).save(path, sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)])
 
 
 def fit(s, fnt, max_w):
@@ -182,12 +215,30 @@ def finish(content, hover=False, background=False):
     return out
 
 
-def countdown_card(row, height, page=0, pages=1):
+def countdown_fonts(k):
+    return (font("Semibold", round(19 * k)), font("Regular", round(12 * k)), font("Semibold", round(14 * k)),
+            font("Semibold", round(16 * k)))
+
+
+def countdown_width(rows, height):
+    """Smallest width that fits every train in the rotation, so cards never jump."""
+    k = height / 48
+    num_f, unit_f, dest_f, now_f = countdown_fonts(k)
+    widths = []
+    for _route, dest, mins, _stale in rows:
+        time_w = now_f.getlength("now") if mins == 0 else \
+            num_f.getlength(str(min(mins, 99))) + unit_f.getlength(" min")
+        widths.append(10 * k + 26 * k + 10 * k + min(dest_f.getlength(dest), 150 * k) + 16 * k + time_w
+                      + (15 * k if len(rows) > 1 else 10 * k))
+    return round(max(widths + [140 * k]))
+
+
+def countdown_card(row, height, page=0, pages=1, width=None):
     """One train, full size, in the spirit of the MTA countdown clocks."""
     k = height / 48
     light = light_theme()
     ink = (0, 0, 0) if light else (255, 255, 255)
-    w = round(COUNTDOWN_W * k)
+    w = width or countdown_width([row], height)
     route, dest, mins, stale = row
     fade = 0.5 if stale else 1.0
     p = Painter(w, height)
@@ -195,19 +246,18 @@ def countdown_card(row, height, page=0, pages=1):
     cy = height / 2
     base = cy + 5.5 * k  # shared baseline for every word on the line
     p.bullet(route, pad + d / 2, cy, d, fade)
-    num_f, unit_f, dest_f = font("Semibold", round(19 * k)), font("Regular", round(12 * k)), \
-        font("Semibold", round(14 * k))
+    num_f, unit_f, dest_f, now_f = countdown_fonts(k)
     right = w - (15 * k if pages > 1 else 10 * k)
     if mins == 0:
-        p.text((right, base), "now", font("Semibold", round(16 * k)), ink, fade, "rs")
-        time_w = font("Semibold", round(16 * k)).getlength("now")
+        p.text((right, base), "now", now_f, ink, fade, "rs")
+        time_w = now_f.getlength("now")
     else:
         unit = " min"
         p.text((right, base), unit, unit_f, ink, 0.6 * fade, "rs")
         p.text((right - unit_f.getlength(unit), base), str(min(mins, 99)), num_f, ink, fade, "rs")
         time_w = unit_f.getlength(unit) + num_f.getlength(str(min(mins, 99)))
     dest_x = pad + d + 10 * k
-    dest_max = right - time_w - 10 * k - dest_x
+    dest_max = right - time_w - 16 * k - dest_x
     p.text((dest_x, base), fit(dest, dest_f, dest_max), dest_f, ink, 0.95 * fade, "ls")
     if pages > 1:  # a quiet pager: which of the upcoming trains this is
         gap, r = 6 * k, 1.6 * k
@@ -224,7 +274,7 @@ def countdown_message(message, height):
     k = height / 48
     light = light_theme()
     ink = (0, 0, 0) if light else (255, 255, 255)
-    return message_only(message, height, k, ink, light, round(COUNTDOWN_W * k))
+    return message_only(message, height, k, ink, light, round(150 * k))
 
 
 def shifted(img, dy, opacity):
@@ -244,9 +294,6 @@ def shifted(img, dy, opacity):
     return out
 
 
-COUNTDOWN_W = 238
-
-
 def message_only(message, height, k, ink, light, width):
     p = Painter(width, height)
     p.text((width / 2, height / 2), message, font("Regular", round(12 * k)), ink, 0.65, "mm")
@@ -255,17 +302,18 @@ def message_only(message, height, k, ink, light, width):
 
 def render_clock(rows, message, height, k, ink, light):
     """Two quiet lines, set like the Windows 11 taskbar clock."""
-    w = round(206 * k)
-    if message:
-        return message_only(message, height, k, ink, light, w)
-    p = Painter(w, height)
     body, strong = font("Regular", round(12 * k)), font("Semibold", round(12 * k))
     pad, d, unit = 12 * k, 16 * k, " min"
+    if message:
+        return message_only(message, height, k, ink, light, round(150 * k))
+    dest_w = max(min(body.getlength(r[1]), 130 * k) for r in rows)
+    w = round(pad + d + 8 * k + dest_w + 14 * k + strong.getlength("99") + body.getlength(unit) + pad)
+    p = Painter(w, height)
     right = w - pad
     dest_x = pad + d + 8 * k
     dest_max = right - dest_x - strong.getlength("99") - body.getlength(unit) - 8 * k
     centers = [height / 2 - 8.5 * k, height / 2 + 8.5 * k] if len(rows) > 1 else [height / 2]
-    for (route, dest, mins, stale), cy in zip(rows, centers):
+    for (route, dest, mins, stale), cy in zip(rows, centers, strict=False):
         fade = 0.5 if stale else 1.0
         p.bullet(route, pad + d / 2, cy, d, fade)
         p.text((dest_x, cy), fit(dest, body, dest_max), body, ink, 0.92 * fade)
@@ -278,31 +326,26 @@ def render_clock(rows, message, height, k, ink, light):
 
 
 def render_minimal(rows, message, height, k, ink, light):
-    """One capsule per train: the line and the minutes, nothing else."""
+    """Only the line and the time, small and close together."""
     if message:
-        return message_only(message, height, k, ink, light, round(150 * k))
-    strong, body = font("Semibold", round(13 * k)), font("Regular", round(11 * k))
-    d, ch, gap, pad = 18 * k, 28 * k, 10 * k, 6 * k
-    chips = []
-    for route, dest, mins, stale in rows:
-        num, unit = ("now", "") if mins == 0 else (str(min(mins, 99)), " min")
-        cw = 5 * k + d + 8 * k + strong.getlength(num) + body.getlength(unit) + 13 * k
-        chips.append((route, num, unit, stale, cw))
-    w = round(pad * 2 + sum(c[4] for c in chips) + gap * (len(chips) - 1))
+        return message_only(message, height, k, ink, light, round(110 * k))
+    strong, body = font("Semibold", round(12 * k)), font("Regular", round(11 * k))
+    d, inner, gap, pad = 14 * k, 4 * k, 12 * k, 8 * k
+    items = []
+    for route, _dest, mins, stale in rows:
+        num, unit = ("now", "") if mins == 0 else (str(min(mins, 99)), "m")
+        items.append((route, num, unit, stale, d + inner + strong.getlength(num) + body.getlength(unit)))
+    w = round(pad * 2 + sum(i[4] for i in items) + gap * (len(items) - 1))
     p = Painter(w, height)
     x, cy = pad, height / 2
-    for route, num, unit, stale, cw in chips:
+    for route, num, unit, stale, iw in items:
         fade = 0.5 if stale else 1.0
-        x0, top = x, cy - ch / 2
-        p.shape(lambda g, s, x0=x0, cw=cw, top=top: g.rounded_rectangle(
-            [x0 * s, top * s, (x0 + cw) * s, (top + ch) * s], radius=ch / 2 * s, fill=255),
-            ink, 0.13 * fade, shadow=False)
-        p.bullet(route, x0 + 5 * k + d / 2, cy, d, fade)
-        tx = x0 + 5 * k + d + 8 * k
-        p.text((tx, cy), num, strong, ink, fade)
+        p.bullet(route, x + d / 2, cy, d, fade)
+        tx = x + d + inner
+        p.text((tx, cy + 4 * k), num, strong, ink, fade, "ls")
         if unit:
-            p.text((tx + strong.getlength(num), cy + 0.5 * k), unit, body, ink, 0.6 * fade)
-        x += cw + gap
+            p.text((tx + strong.getlength(num), cy + 4 * k), unit, body, ink, 0.6 * fade, "ls")
+        x += iw + gap
     return p.compose(0 if light else 0.45)
 
 
@@ -474,18 +517,25 @@ def render_led(rows, message, height, k, ink, light):
 # ---------------------------------------------------------------- data
 
 def log_error(exc_type, exc, tb):
+    """Append to %APPDATA%\\Trainbar\\error.log, keeping one 256 KB backup at most."""
     try:
         os.makedirs(DATA_DIR, exist_ok=True)
-        with open(os.path.join(DATA_DIR, "error.log"), "a", encoding="utf-8") as f:
+        path = os.path.join(DATA_DIR, "error.log")
+        if os.path.exists(path) and os.path.getsize(path) > 256 * 1024:
+            os.replace(path, path + ".1")
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(f"Trainbar {__version__} ")
             f.write(time.strftime("%Y-%m-%d %H:%M:%S ") + "".join(traceback.format_exception(exc_type, exc, tb)))
     except OSError:
         pass
 
 
 def http_get(url, timeout=12):
-    req = urllib.request.Request(url, headers={"User-Agent": "Trainbar/1.1"})
+    req = urllib.request.Request(url, headers={"User-Agent": f"Trainbar/{__version__} (+{HOMEPAGE})",
+                                               "Accept-Encoding": "gzip"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
-        return r.read()
+        data = r.read()
+        return gzip.decompress(data) if r.headers.get("Content-Encoding") == "gzip" else data
 
 
 def _varint(b, i):
@@ -554,6 +604,10 @@ def parse_feed(data, stop_ids):
     return out
 
 
+STATION_COLUMNS = {"GTFS Stop ID", "Complex ID", "Stop Name", "Line", "Borough", "Daytime Routes",
+                   "North Direction Label", "South Direction Label"}
+
+
 def load_stations():
     os.makedirs(DATA_DIR, exist_ok=True)
     fresh = os.path.exists(STATIONS_PATH) and time.time() - os.path.getmtime(STATIONS_PATH) < 30 * 86400
@@ -567,6 +621,10 @@ def load_stations():
                 raise
     with open(STATIONS_PATH, encoding="utf-8") as f:
         rows = list(csv.DictReader(f))
+    missing = STATION_COLUMNS - set(rows[0] if rows else ())
+    if missing:
+        os.remove(STATIONS_PATH)  # fetch a fresh copy next time
+        raise RuntimeError(f"The MTA station list changed format (missing {', '.join(sorted(missing))}).")
     names, complexes = {}, {}
     for r in rows:
         sid = r["GTFS Stop ID"]
@@ -577,6 +635,8 @@ def load_stations():
             "north": r["North Direction Label"], "south": r["South Direction Label"],
         })
         cx["stops"].append(sid)
+        if r["Line"] not in cx["line"].split(" / "):
+            cx["line"] += " / " + r["Line"]
         if r["Stop Name"] not in cx["name"].split(" / "):
             cx["name"] += " / " + r["Stop Name"]
         for route in r["Daytime Routes"].split():
@@ -606,6 +666,29 @@ def short_name(name):
     return SHORT.get(name) or name.split("-")[0]
 
 
+def pick_rows(arrivals, station, names, now, last_ok, mode, rotate=False, limit=2):
+    """Choose which trains to show. Returns [(route, destination, minutes, stale)].
+
+    rotate: the next `limit` trains, soonest first (Countdown).
+    Otherwise in mode "B" the next train each way, else the next two in direction `mode`.
+    """
+    live = [a for a in arrivals if a[2] >= now - 20]
+    if rotate:
+        picks = [a for a in live if mode == "B" or a[0].endswith(mode)][:limit]
+    elif mode == "B":
+        picks = [next((a for a in live if a[0].endswith(d)), None) for d in "NS"]
+        picks = [p for p in picks if p] or live[:2]
+    else:
+        picks = [a for a in live if a[0].endswith(mode)][:2]
+    stale = now - last_ok > 180
+    rows = []
+    for _sid, route, t, dest in picks:
+        route = {"GS": "S", "FS": "S", "SI": "SIR"}.get(route, route)
+        name = "Last stop" if dest[:-1] in station["stops"] else short_name(names.get(dest[:-1], dest))
+        rows.append((route, name, max(0, int((t - now) // 60)), stale))
+    return rows
+
+
 class Feed:
     """Background poller. Keeps the latest arrivals for one station."""
 
@@ -619,6 +702,8 @@ class Feed:
         self.extra_feeds = set()
         self.last_sweep = 0.0
         self.wake = threading.Event()
+        self.idle = False  # set while the widget is hidden behind a fullscreen app
+        self.failures = 0
         self.pool = ThreadPoolExecutor(max_workers=8)
         threading.Thread(target=self._loop, daemon=True).start()
 
@@ -640,8 +725,14 @@ class Feed:
                 self._poll()
             except Exception:
                 log_error(*sys.exc_info())
-            self.wake.wait(POLL_SECONDS)
+            self.wake.wait(self.next_wait())
             self.wake.clear()
+
+    def next_wait(self):
+        """30 s normally; doubling up to 5 min while offline; 2 min while hidden."""
+        if self.failures:
+            return min(POLL_SECONDS * 2 ** (self.failures - 1), 300)
+        return 120 if self.idle else POLL_SECONDS
 
     def _poll(self):
         with self.lock:
@@ -675,7 +766,9 @@ class Feed:
                 return  # station changed mid-poll
             if errors == len(feeds):
                 self.error = str(err)
+                self.failures += 1
             else:
+                self.failures = 0
                 if sweep:
                     self.last_sweep = time.time()
                 self.error = None
@@ -806,15 +899,22 @@ def autostart_enabled():
 def set_autostart(on):
     with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE) as k:
         if on:
-            # Copy the script somewhere permanent so startup never points at a moved file.
+            # Copy the program somewhere permanent so startup never points at a moved file.
             os.makedirs(INSTALL_DIR, exist_ok=True)
-            target = os.path.join(INSTALL_DIR, "trainbar.pyw")
-            if os.path.abspath(__file__) != os.path.abspath(target):
-                shutil.copyfile(__file__, target)
-            exe = sys.executable
-            if exe.lower().endswith("python.exe"):
-                exe = exe[:-10] + "pythonw.exe"
-            winreg.SetValueEx(k, APP, 0, winreg.REG_SZ, f'"{exe}" "{target}"')
+            if getattr(sys, "frozen", False):  # the standalone Trainbar.exe
+                target = os.path.join(INSTALL_DIR, "Trainbar.exe")
+                command = f'"{target}"'
+                source = sys.executable
+            else:
+                target = os.path.join(INSTALL_DIR, "trainbar.pyw")
+                exe = sys.executable
+                if exe.lower().endswith("python.exe"):
+                    exe = exe[:-10] + "pythonw.exe"
+                command = f'"{exe}" "{target}"'
+                source = __file__
+            if os.path.abspath(source) != os.path.abspath(target):
+                shutil.copyfile(source, target)
+            winreg.SetValueEx(k, APP, 0, winreg.REG_SZ, command)
         else:
             try:
                 winreg.DeleteValue(k, APP)
@@ -832,6 +932,8 @@ class App:
         self.root.withdraw()
         self.root.overrideredirect(True)
         self.root.report_callback_exception = log_error
+        self.icon = ImageTk.PhotoImage(app_icon(64))
+        self.root.iconphoto(True, self.icon)  # title bars of Settings and the station search
         self.surface = tk.Frame(self.root, bd=0, highlightthickness=0, bg="black", cursor="hand2")
         self.surface.pack(fill="both", expand=True)
         self.size = (1, 1)
@@ -843,6 +945,8 @@ class App:
         self.page = 0
         self.anim = None  # (old_card, start_time) while a slide is running
         self.cards = {}
+        self.drawn = None  # what is on screen now, to skip identical redraws
+        self.last_guard = time.monotonic()
 
         s = self.surface
         s.bind("<ButtonPress-1>", self._press)
@@ -873,14 +977,17 @@ class App:
     def _load_cfg(self):
         try:
             with open(CONFIG_PATH, encoding="utf-8") as f:
-                return json.load(f)
+                cfg = json.load(f)
+            return cfg if isinstance(cfg, dict) else {"dir": "B"}
         except (OSError, ValueError):
             return {"dir": "B"}
 
     def _save_cfg(self):
         os.makedirs(DATA_DIR, exist_ok=True)
-        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+        tmp = CONFIG_PATH + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(self.cfg, f, indent=2)
+        os.replace(tmp, CONFIG_PATH)
 
     @property
     def station(self):
@@ -898,45 +1005,40 @@ class App:
         arrivals, last_ok, error = self.feed.snapshot()
         if not last_ok:
             return None, "Offline" if error else "Loading…"
-        now = time.time()
-        live = [a for a in arrivals if a[2] >= now - 20]
-        mode = self.cfg.get("dir", "B")
-        if self.theme == "countdown":  # the next few trains, soonest first: the next few trains, soonest first
-            picks = [a for a in live if mode == "B" or a[0].endswith(mode)][:limit]
-        elif mode == "B":
-            picks = [next((a for a in live if a[0].endswith(d)), None) for d in "NS"]
-            picks = [p for p in picks if p] or live[:2]
-        else:
-            picks = [a for a in live if a[0].endswith(mode)][:2]
-        if not picks:
-            return None, "No trains"
-        stale = now - last_ok > 180
-        rows = []
-        for sid, route, t, dest in picks:
-            route = {"GS": "S", "FS": "S", "SI": "SIR"}.get(route, route)
-            name = "Last stop" if dest[:-1] in station["stops"] else short_name(self.names.get(dest[:-1], dest))
-            rows.append((route, name, max(0, int((t - now) // 60)), stale))
-        return rows, None
+        rows = pick_rows(arrivals, station, self.names, time.time(), last_ok, self.cfg.get("dir", "B"),
+                         rotate=self.theme == "countdown", limit=limit)
+        return (rows, None) if rows else (None, "No trains")
 
     def draw(self):
+        if self.hidden:
+            return
         hover, background = self.hover or bool(self.drag), self.cfg.get("background", False)
+        height, light = self._bar_height(), light_theme()
+        if self.theme == "countdown":
+            rows, message = self.rows(limit=self.cfg.get("cycle_count", 4))
+            key = ("countdown", rows, message, self.page, hover, background, height, light)
+        else:
+            rows, message = self.rows()
+            key = (self.theme, rows, message, hover, background, height, light)
+        if key == self.drawn and not self.anim:
+            return  # nothing visible changed: skip the render and the window update
+        self.drawn = None if self.anim else key
         if self.theme == "countdown":
             img = finish(self._countdown_frame(), hover, background)
         else:
-            rows, message = self.rows()
-            img = render(self.theme, rows, message, self._bar_height(), hover=hover, background=background)
+            img = render(self.theme, rows, message, height, hover=hover, background=background)
         if img.size != self.size:
             self.size = img.size
             self._place()
         present_layered(self._hwnd(), img)
 
     # -- countdown: one train at a time, sliding to the next
-    def _card(self, row, page, pages):
-        key = (row, page, pages, self._bar_height(), light_theme())
+    def _card(self, row, page, pages, width):
+        key = (row, page, pages, width, self._bar_height(), light_theme())
         if key not in self.cards:
             if len(self.cards) > 64:
                 self.cards.clear()
-            self.cards[key] = countdown_card(row, self._bar_height(), page, pages)
+            self.cards[key] = countdown_card(row, self._bar_height(), page, pages, width)
         return self.cards[key]
 
     def _current_card(self):
@@ -945,7 +1047,8 @@ class App:
             self.page = 0
             return countdown_message(message, self._bar_height())
         self.page %= len(rows)
-        return self._card(rows[self.page], self.page, len(rows))
+        width = countdown_width(rows, self._bar_height())
+        return self._card(rows[self.page], self.page, len(rows), width)
 
     def _countdown_frame(self):
         card = self._current_card()
@@ -1018,14 +1121,22 @@ class App:
 
     def _guard(self):
         """Stay above the taskbar, follow it if it moves, and hide for fullscreen apps."""
+        now = time.monotonic()
+        if now - self.last_guard > 60:  # the PC was asleep: the data is old
+            self.feed.refresh()
+        self.last_guard = now
         if fullscreen_app_in_front():
             if not self.hidden:
                 self.root.withdraw()
                 self.hidden = True
+                self.feed.idle = True
         else:
             if self.hidden:
                 self.root.deiconify()
                 self.hidden = False
+                self.feed.idle = False
+                self.feed.refresh()
+                self.drawn = None
                 self.draw()
             if not self.drag:
                 self._place()
@@ -1041,7 +1152,7 @@ class App:
         if not self.drag:
             return
         dx = e.x_root - self.drag["x0"]
-        if abs(dx) > 3:
+        if abs(dx) > 3 and not self.cfg.get("locked", False):
             self.drag["moved"] = True
         if self.drag["moved"]:
             g = taskbar_geometry()
@@ -1080,6 +1191,8 @@ class App:
                                    command=lambda c=code: self._set("theme", c))
         m.add_cascade(label="Theme", menu=themes)
         m.add_command(label="Change station…", command=self.open_picker)
+        lock = tk.BooleanVar(value=self.cfg.get("locked", False))
+        m.add_checkbutton(label="Lock position", variable=lock, command=lambda: self._set("locked", lock.get()))
         m.add_command(label="Settings…", command=self.open_settings)
         m.add_command(label="Refresh now", command=self.feed.refresh)
         m.add_separator()
@@ -1095,6 +1208,7 @@ class App:
         self.cfg[key] = value
         self._save_cfg()
         self.anim = None
+        self.drawn = None
         self.draw()
         if self.settings and self.settings.winfo_exists():
             self.settings.refresh()
@@ -1116,84 +1230,235 @@ class App:
         if self.picker and self.picker.winfo_exists():
             self.picker.lift()
             return
-        light = light_theme()
-        bg, field, fg, sub = (("#f3f3f3", "#ffffff", "#1a1a1a", "#5f5f5f") if light
-                              else ("#202020", "#2d2d2d", "#ffffff", "#a0a0a0"))
-        accent = "#005fb8" if light else "#60cdff"
-        p = self.picker = tk.Toplevel(self.root)
-        p.title("Choose a station")
-        p.configure(bg=bg, padx=16, pady=16)
-        p.attributes("-topmost", True)
-        p.resizable(False, False)
-        ui = ("Segoe UI Variable Text", 11)
-        q = tk.StringVar()
-        entry = tk.Entry(p, textvariable=q, font=ui, bg=field, fg=fg, insertbackground=fg, relief="flat",
-                         highlightthickness=1, highlightbackground=field, highlightcolor=accent)
-        entry.pack(fill="x", ipady=7)
-        tk.Label(p, text="Search by name or line, like “bedford l”", font=("Segoe UI Variable Text", 9),
-                 bg=bg, fg=sub, anchor="w").pack(fill="x", pady=(6, 8))
-        lb = tk.Listbox(p, font=ui, width=42, height=11, bg=bg, fg=fg, selectbackground=field,
-                        selectforeground=fg, relief="flat", highlightthickness=0, activestyle="none", bd=0)
-        lb.pack(fill="both")
-        ordered = sorted(self.complexes.values(), key=lambda c: (c["name"], c["routes"]))
-        shown = []
+        self.picker = StationPicker(self)
 
-        def update(*_):
-            tokens = q.get().lower().split()
-            shown.clear()
-            lb.delete(0, "end")
-            for c in ordered:
-                hay = c["name"].lower()
-                if all(tok in hay or tok.upper() in c["routes"] for tok in tokens):
-                    shown.append(c)
-                    lb.insert("end", f"  {c['name']}     {'  '.join(c['routes'])}")
-            if shown:
-                lb.selection_set(0)
-
-        def choose(*_):
-            sel = lb.curselection()
-            if not sel:
-                return
-            c = shown[sel[0]]
-            self.cfg["station"] = c["id"]
-            self.cfg["dir"] = "B"
-            self._save_cfg()
-            self.feed.set_station(c)
-            self.draw()
-            p.destroy()
-            if self.settings and self.settings.winfo_exists():
-                self.settings.refresh()
-
-        def move(delta):
-            sel = lb.curselection()
-            i = max(0, min((sel[0] if sel else 0) + delta, len(shown) - 1))
-            lb.selection_clear(0, "end")
-            lb.selection_set(i)
-            lb.see(i)
-            return "break"
-
-        q.trace_add("write", update)
-        entry.bind("<Return>", choose)
-        entry.bind("<Down>", lambda e: move(1))
-        entry.bind("<Up>", lambda e: move(-1))
-        lb.bind("<Double-Button-1>", choose)
-        lb.bind("<Return>", choose)
-        p.bind("<Escape>", lambda e: p.destroy())
-        update()
-        p.update_idletasks()
-        dark = ctypes.c_int(0 if light else 1)  # title bar follows the system theme
-        try:
-            ctypes.windll.dwmapi.DwmSetWindowAttribute(user32.GetParent(p.winfo_id()), 20,
-                                                       ctypes.byref(dark), ctypes.sizeof(dark))
-        except OSError:
-            pass
-        x = min(self.root.winfo_x(), p.winfo_screenwidth() - p.winfo_width() - 12)
-        y = self.root.winfo_y() - p.winfo_height() - 48
-        p.geometry(f"+{max(0, x)}+{max(0, y)}")
-        entry.focus_force()
+    def choose_station(self, c):
+        self.cfg["station"] = c["id"]
+        self.cfg["dir"] = "B"
+        self._save_cfg()
+        self.feed.set_station(c)
+        self.page, self.anim = 0, None
+        self.draw()
+        if self.settings and self.settings.winfo_exists():
+            self.settings.refresh()
 
     def run(self):
         self.root.mainloop()
+
+
+BOROUGHS = {"M": "Manhattan", "Bk": "Brooklyn", "Bx": "Bronx", "Q": "Queens", "SI": "Staten Island"}
+ROUTE_LETTERS = set("1234567ABCDEFGJLMNQRSWZ")
+
+
+SYNONYMS = {"junction": "jct", "avenue": "av", "ave": "av", "avs": "av", "street": "st", "sts": "st",
+            "square": "sq", "boulevard": "blvd", "parkway": "pkwy", "heights": "hts", "center": "ctr",
+            "road": "rd", "place": "pl", "highway": "hwy", "hwy": "hwy"}
+
+
+def normalize(text):
+    """Lower case, hyphens and slashes as spaces, and one spelling for each street word."""
+    words = text.lower().replace("-", " ").replace("/", " ").replace(",", " ").split()
+    return " ".join(SYNONYMS.get(w, w) for w in words)
+
+
+def search_stations(complexes, query):
+    """Match names, line names and lines. "jmz" finds every J, M or Z stop; "bedford l" narrows."""
+    tokens = normalize(query).split()
+    results = []
+    for c in complexes.values():
+        hay = normalize(c["name"] + " " + c["line"] + " " + BOROUGHS.get(c["boro"], ""))
+        routes = set(c["routes"])
+        served = 0
+        words = hay.split()
+        for tok in tokens:
+            up = tok.upper()
+            if up in routes:
+                served += 1
+                continue
+            if tok.isdigit() and tok in words:  # "8" means 8 Av, not 80 St
+                continue
+            if len(tok) > 1 and not tok.isdigit() and any(w.startswith(tok) for w in words):
+                continue
+            letters = set(up)
+            # "jmz" means any of the J, M or Z. Numbers stay street numbers ("14" is 14 St).
+            is_route_set = not tok.isdigit() and 1 < len(tok) == len(letters) and letters <= ROUTE_LETTERS
+            if is_route_set and letters & routes:
+                served += len(letters & routes)
+                continue
+            break
+        else:
+            name = normalize(c["name"])
+            query_text = " ".join(tokens)
+            exact = any(normalize(part) == query_text for part in c["name"].split(" / "))
+            starts = bool(tokens) and name.startswith(tokens[0])
+            results.append(((-served, not exact, not starts, c["name"], c["routes"]), c))
+    return [c for _, c in sorted(results, key=lambda r: r[0])]
+
+
+class StationPicker(tk.Toplevel):
+    """A search box with real line bullets, styled after Windows 11."""
+
+    ROW, W, VISIBLE, MAX = 54, 460, 8, 150
+
+    def __init__(self, app):
+        super().__init__(app.root)
+        self.app = app
+        self.c = c = palette()
+        self.hover_bg = "#eaeaea" if not c["dark"] else "#272727"
+        self.title("Choose a station")
+        self.configure(bg=c["bg"], padx=14, pady=14)
+        self.attributes("-topmost", True)
+        self.resizable(False, False)
+        self.name_font = tkfont.Font(family="Segoe UI Variable Text", size=11)
+        self.sub_font = tkfont.Font(family="Segoe UI Variable Text", size=9)
+        self.bullets = {}
+        self.results, self.sel, self.hover = [], 0, None
+
+        border = tk.Frame(self, bg=c["line"], padx=1, pady=1)
+        border.pack(fill="x")
+        box = tk.Frame(border, bg=c["card"], padx=10, pady=8)
+        box.pack(fill="x")
+        tk.Label(box, text="\ue721", font=("Segoe Fluent Icons", 11), bg=c["card"], fg=c["sub"]).pack(side="left")
+        self.q = tk.StringVar()
+        self.entry = tk.Entry(box, textvariable=self.q, font=("Segoe UI Variable Text", 12), bg=c["card"],
+                              fg=c["fg"], insertbackground=c["fg"], relief="flat", bd=0, highlightthickness=0)
+        self.entry.pack(side="left", fill="x", expand=True, padx=(10, 0))
+        self.placeholder = tk.Label(box, text="Search stations or lines", font=("Segoe UI Variable Text", 12),
+                                    bg=c["card"], fg=c["sub"])
+        self.placeholder.place(in_=self.entry, x=0, rely=0.5, anchor="w")
+        self.placeholder.bind("<Button-1>", lambda e: self.entry.focus_set())
+        self.entry.bind("<FocusIn>", lambda e: border.configure(bg=c["accent"]))
+        self.entry.bind("<FocusOut>", lambda e: border.configure(bg=c["line"]))
+
+        self.canvas = tk.Canvas(self, width=self.W, height=self.ROW * self.VISIBLE, bg=c["bg"],
+                                highlightthickness=0, yscrollincrement=self.ROW // 2)
+        self.canvas.pack(pady=(10, 0))
+
+        self.q.trace_add("write", lambda *_: self.update_results())
+        self.entry.bind("<Return>", lambda e: self.choose(self.sel))
+        self.entry.bind("<Down>", lambda e: self.move(1))
+        self.entry.bind("<Up>", lambda e: self.move(-1))
+        self.entry.bind("<Next>", lambda e: self.move(self.VISIBLE))
+        self.entry.bind("<Prior>", lambda e: self.move(-self.VISIBLE))
+        self.bind("<Escape>", lambda e: self.destroy())
+        self.canvas.bind("<Motion>", self._motion)
+        self.canvas.bind("<Leave>", lambda e: self._set_hover(None))
+        self.canvas.bind("<Button-1>", lambda e: self.choose(self._index_at(e.y)))
+        self.canvas.bind("<MouseWheel>", lambda e: self.canvas.yview_scroll(-2 * (e.delta // 120), "units"))
+
+        self.update_results()
+        self.update_idletasks()
+        dark = ctypes.c_int(1 if c["dark"] else 0)
+        try:
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(user32.GetParent(self.winfo_id()), 20,
+                                                       ctypes.byref(dark), ctypes.sizeof(dark))
+        except OSError:
+            pass
+        x = min(app.root.winfo_x(), self.winfo_screenwidth() - self.winfo_width() - 12)
+        y = app.root.winfo_y() - self.winfo_height() - 48
+        self.geometry(f"+{max(0, x)}+{max(0, y)}")
+        self.entry.focus_force()
+
+    # data
+    def update_results(self):
+        query = self.q.get()
+        if query:
+            self.placeholder.place_forget()
+        else:
+            self.placeholder.place(in_=self.entry, x=0, rely=0.5, anchor="w")
+        self.results = search_stations(self.app.complexes, query)[:self.MAX]
+        self.sel, self.hover = 0, None
+        self.canvas.yview_moveto(0)
+        self.redraw()
+
+    def bullet_strip(self, routes):
+        key = tuple(routes)
+        if key not in self.bullets:
+            d, gap, shown = 20, 4, routes[:6]
+            w = max(1, len(shown) * (d + gap) - gap + 2)
+            pt = Painter(w, d + 2)
+            for i, r in enumerate(shown):
+                pt.bullet(r, 1 + d / 2 + i * (d + gap), (d + 2) / 2, d)
+            self.bullets[key] = ImageTk.PhotoImage(pt.compose(0))
+        return self.bullets[key]
+
+    # drawing
+    def round_rect(self, x1, y1, x2, y2, r, **kw):
+        pts = [x1 + r, y1, x2 - r, y1, x2, y1, x2, y1 + r, x2, y2 - r, x2, y2, x2 - r, y2, x1 + r, y2,
+               x1, y2, x1, y2 - r, x1, y1 + r, x1, y1]
+        return self.canvas.create_polygon(pts, smooth=True, **kw)
+
+    def redraw(self):
+        cv, c, R, W = self.canvas, self.c, self.ROW, self.W
+        cv.delete("all")
+        if not self.results:
+            query = self.q.get().strip()
+            cv.create_text(W / 2, R * 3.2, text=f"No stations match “{query}”", font=self.name_font,
+                           fill=c["fg"])
+            cv.create_text(W / 2, R * 3.2 + 26, text="Try part of a name, like “bedford”, or lines, like “jmz”",
+                           font=self.sub_font, fill=c["sub"])
+            cv.configure(scrollregion=(0, 0, W, R * self.VISIBLE))
+            return
+        for i, st in enumerate(self.results):
+            y = i * R
+            if i == self.sel:
+                self.round_rect(2, y + 3, W - 2, y + R - 3, 8, fill=c["card"], outline="")
+                self.round_rect(4, y + R / 2 - 8, 7, y + R / 2 + 8, 2, fill=c["accent"], outline="")
+            elif i == self.hover:
+                self.round_rect(2, y + 3, W - 2, y + R - 3, 8, fill=self.hover_bg, outline="")
+            strip = self.bullet_strip(st["routes"])
+            more = len(st["routes"]) - 6
+            right = W - 14
+            if more > 0:
+                cv.create_text(right, y + R / 2, text=f"+{more}", font=self.sub_font, fill=c["sub"], anchor="e")
+                right -= self.sub_font.measure(f"+{more}") + 6
+            cv.create_image(right, y + R / 2, image=strip, anchor="e")
+            max_w = right - strip.width() - 18 - 20
+            cv.create_text(20, y + R / 2 - 9, text=self._fit(st["name"], self.name_font, max_w),
+                           font=self.name_font, fill=c["fg"], anchor="w")
+            sub = " · ".join(x for x in (BOROUGHS.get(st["boro"], ""), st["line"].split(" / ")[0]) if x)
+            cv.create_text(20, y + R / 2 + 11, text=self._fit(sub, self.sub_font, max_w),
+                           font=self.sub_font, fill=c["sub"], anchor="w")
+        cv.configure(scrollregion=(0, 0, W, max(R * self.VISIBLE, R * len(self.results))))
+
+    @staticmethod
+    def _fit(text, fnt, max_w):
+        if fnt.measure(text) <= max_w:
+            return text
+        while text and fnt.measure(text + "…") > max_w:
+            text = text[:-1]
+        return text.rstrip() + "…"
+
+    # input
+    def _index_at(self, y):
+        i = int(self.canvas.canvasy(y) // self.ROW)
+        return i if 0 <= i < len(self.results) else None
+
+    def _motion(self, e):
+        self._set_hover(self._index_at(e.y))
+
+    def _set_hover(self, i):
+        if i != self.hover:
+            self.hover = i
+            self.redraw()
+
+    def move(self, delta):
+        if not self.results:
+            return "break"
+        self.sel = max(0, min(self.sel + delta, len(self.results) - 1))
+        top = self.canvas.canvasy(0) / self.ROW
+        if self.sel < top:
+            self.canvas.yview_moveto(self.sel / len(self.results))
+        elif self.sel >= top + self.VISIBLE:
+            self.canvas.yview_moveto((self.sel - self.VISIBLE + 1) / len(self.results))
+        self.redraw()
+        return "break"
+
+    def choose(self, i):
+        if i is None or not self.results:
+            return
+        self.app.choose_station(self.results[i])
+        self.destroy()
 
 
 def palette():
@@ -1330,10 +1595,23 @@ class SettingsWindow(tk.Toplevel):
         card = self.section("System")
         right = self.row(card, "Start with Windows", "Copies Trainbar to %LOCALAPPDATA%\\Trainbar")
         self.toggle(right, autostart_enabled(), lambda v: (set_autostart(v), self.refresh()))
-        right = self.row(card, "Position", "Drag the widget sideways to move it")
+        locked = cfg.get("locked", False)
+        right = self.row(card, "Lock position", "Stops dragging from moving it" if locked
+                         else "Drag the widget sideways to move it")
+        self.toggle(right, locked, lambda v: app._set("locked", v))
+        right = self.row(card, "Position", "Put it back next to the tray icons")
         self.button(right, "Reset", lambda: (app._reset_pos(), self.refresh())).pack()
         right = self.row(card, "Data", "MTA real-time feeds, checked every 30 seconds")
         self.button(right, "Refresh now", app.feed.refresh).pack()
+
+        foot = tk.Frame(self.body, bg=c["bg"])
+        foot.pack(fill="x", pady=(14, 0))
+        tk.Label(foot, text=f"Trainbar {__version__}", font=self.f["small"], bg=c["bg"], fg=c["sub"]).pack(
+            side="left")
+        for text, url in (("Report a problem", HOMEPAGE + "/issues"), ("Website", HOMEPAGE)):
+            link = tk.Label(foot, text=text, font=self.f["small"], bg=c["bg"], fg=c["accent"], cursor="hand2")
+            link.bind("<Button-1>", lambda e, u=url: webbrowser.open(u))
+            link.pack(side="right", padx=(12, 0))
 
 
 def main():
@@ -1344,7 +1622,14 @@ def main():
     mutex = ctypes.windll.kernel32.CreateMutexW(None, False, "Local\\TrainbarTaskbar")
     if ctypes.windll.kernel32.GetLastError() == 183:  # already running
         return
-    App().run()
+    try:
+        App().run()
+    except Exception as e:
+        log_error(*sys.exc_info())
+        from tkinter import messagebox
+        root = tk.Tk()
+        root.withdraw()
+        messagebox.showerror("Trainbar", f"Trainbar could not start.\n\n{e}\n\nDetails are in {DATA_DIR}\\error.log")
     del mutex
 
 

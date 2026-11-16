@@ -1,5 +1,7 @@
 # Trainbar
 
+[![CI](https://github.com/thedevmark/trainbar/actions/workflows/ci.yml/badge.svg)](https://github.com/thedevmark/trainbar/actions/workflows/ci.yml)
+
 Live NYC subway arrivals on your Windows taskbar, set to look like part of Windows.
 
 ![Trainbar on the Windows 11 taskbar, showing the next L train at Bedford Av](docs/screenshot.png)
@@ -17,7 +19,7 @@ Right-click and open **Theme** to switch.
 | Countdown | One train at a time, large, sliding to the next. The default. |
 | Clock | Two lines in Segoe UI Variable, sized like the taskbar clock. |
 | LED | A dot-matrix sign with glowing dots and no box behind it. |
-| Minimal | One small capsule per train with the line and the minutes. |
+| Minimal | Only the line bullet and the minutes, small and close together. |
 
 Express trains (such as the 6 and 7 express) get a diamond instead of a circle.
 
@@ -32,7 +34,9 @@ Right-click and select **Settings…** for every option in one window. Changes a
 
 ## Install
 
-You need Windows 10 or 11 and Python 3 with Pillow. Tested on Windows 11 with Python 3.14.
+**Download:** get `Trainbar.exe` from the [latest release](https://github.com/thedevmark/trainbar/releases/latest) and run it. No Python needed. Windows SmartScreen may warn about an unsigned app the first time; select **More info**, then **Run anyway**.
+
+**From source:** you need Windows 10 or 11 and Python 3.10 or later.
 
 ```
 pip install -r requirements.txt
@@ -41,27 +45,33 @@ pythonw trainbar.pyw
 
 `pythonw` runs it without a console window. On first launch a search box opens so you can choose your station.
 
-To start it with Windows, turn on **Start with Windows** in Settings. This copies `trainbar.pyw` to `%LOCALAPPDATA%\Trainbar` and adds an entry under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`. Turn it off to remove the entry.
+To start it with Windows, turn on **Start with Windows** in Settings. This copies Trainbar to `%LOCALAPPDATA%\Trainbar` and adds an entry under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`. Turn it off to remove the entry.
 
 ## Use
 
 | Action | What it does |
 | --- | --- |
-| Right-click | Direction, theme, station, settings, refresh, quit |
+| Right-click | Direction, theme, station, lock position, settings, refresh, quit |
 | Click | Countdown: show the next train now. Other themes: refresh. |
 | Point at it | Countdown: pause on the current train |
-| Drag sideways | Move it along the taskbar (the position is remembered) |
+| Drag sideways | Move it along the taskbar. The position is remembered. Turn on **Lock position** to stop it moving. |
 
-In the station search, type part of the name, a line, or both: `96 q`, `bedford l`, `jay st`. Complexes such as Times Sq / 42 St–Port Authority are one entry and show every line that stops there.
+In the station search, type part of a name, lines, or both: `bedford l`, `jmz` (every stop on the J, M or Z), `broadway jct`, `14 st`. Street words match either spelling, so `junction` and `jct` both work. Complexes such as Times Sq / 42 St–Port Authority are one entry and show every line that stops there.
 
 Trainbar hides itself while a full-screen app is in front, and it keeps itself above the taskbar.
 
 ## How it works
 
-- Arrival times come from the MTA's public [GTFS-realtime subway feeds](https://api.mta.info/), which need no API key. Trainbar checks the feeds for your station's lines every 30 seconds, and all eight feeds every 5 minutes so that it can catch trains rerouted from other lines.
+- Arrival times come from the MTA's public [GTFS-realtime subway feeds](https://api.mta.info/), which need no API key. Trainbar checks the feeds for your station's lines every 30 seconds, and all eight feeds every 5 minutes so that it can catch trains rerouted from other lines. Feeds are fetched gzip-compressed, about 5 KB each.
+- When the network is down, checks back off from 30 seconds to 5 minutes. Behind a full-screen app they slow to every 2 minutes. After the PC wakes from sleep, it checks at once.
+- The widget redraws only when something visible changes.
 - Station names, lines and direction labels come from the [MTA Subway Stations](https://data.ny.gov/Transportation/MTA-Subway-Stations/39hk-dx4f) dataset on data.ny.gov. It is downloaded on first run and refreshed every 30 days.
 - The protobuf feeds are decoded by a small reader in the script, so the only dependency is Pillow, which draws the widget. A layered window with per-pixel alpha keeps the edges smooth on any background.
-- Settings live in `%APPDATA%\Trainbar\config.json`. Unexpected errors are written to `error.log` in the same folder.
+- Settings live in `%APPDATA%\Trainbar\config.json` and are saved atomically. Unexpected errors are written to `error.log` in the same folder, capped at 256 KB.
+
+## Privacy
+
+Trainbar talks to two hosts only: `api-endpoint.mta.info` for arrivals and `data.ny.gov` for the station list. It sends no analytics and stores nothing outside `%APPDATA%\Trainbar` and, if you turn on Start with Windows, `%LOCALAPPDATA%\Trainbar` and one registry value.
 
 If the feeds can't be reached, the widget reads "Offline". If data is more than three minutes old, the text fades to half strength so you know not to trust it.
 
@@ -75,6 +85,10 @@ If the feeds can't be reached, the widget reads "Offline". If data is more than 
 
 1. In Settings, turn off **Start with Windows**. Then right-click the widget and select **Quit**.
 2. Delete `%APPDATA%\Trainbar` and `%LOCALAPPDATA%\Trainbar`.
+
+## Contributing
+
+Bug reports and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, tests and how the code is laid out, and [CHANGELOG.md](CHANGELOG.md) for what changed in each release.
 
 ## Not affiliated
 

@@ -1,0 +1,24 @@
+[project]
+name = "trainbar"
+description = "Live NYC subway arrivals on the Windows taskbar"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+dependencies = ["Pillow>=10"]
+dynamic = ["version"]
+
+[project.urls]
+Homepage = "https://github.com/thedevmark/trainbar"
+Issues = "https://github.com/thedevmark/trainbar/issues"
+
+[tool.ruff]
+line-length = 120
+extend-include = ["*.pyw"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B", "UP", "SIM", "I"]
+ignore = [
+    "E731",  # small lambdas keep the drawing code readable
+    "E741",  # l/t/r/b are rectangle edges
+    "SIM105",
+]
