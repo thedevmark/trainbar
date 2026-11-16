@@ -58,7 +58,9 @@ ROUTE_COLORS = {
 LED_COLORS = {**ROUTE_COLORS, **{r: (40, 110, 255) for r in ("A", "C", "E", "SIR")},
               **{r: (196, 132, 70) for r in "JZ"}}
 DARK_LETTER = set("NQRW")
-THEMES = [("clock", "Clock"), ("led", "LED"), ("minimal", "Minimal")]
+THEMES = [("countdown", "Countdown"), ("clock", "Clock"), ("led", "LED"), ("minimal", "Minimal")]
+DEFAULT_THEME = "countdown"
+SLIDE_MS = 420
 
 FONT_FILE = "C:/Windows/Fonts/SegUIVar.ttf"
 FALLBACK_FONTS = {"Regular": "segoeui.ttf", "Semibold": "seguisb.ttf", "Bold": "segoeuib.ttf"}
@@ -124,7 +126,10 @@ class Painter:
                                               fill=255), color, opacity)
         label = "S" if route in ("SIR", "H") else route[0]
         ink = (0, 0, 0) if route[0] in DARK_LETTER else (255, 255, 255)
-        self.text((cx, cy + d / 32), label, font("Bold", round(d * 0.66)), ink, opacity, "mm", shadow=False)
+        f = font("Bold", round(d * 0.62))
+        # Centre the letter on its actual outline, not on the font's line box.
+        l, t, r_, b = f.getbbox(label, anchor="ls")
+        self.text((cx - (l + r_) / 2, cy - (t + b) / 2), label, f, ink, opacity, "ls", shadow=False)
 
     def compose(self, shadow_strength):
         out = Image.new("RGBA", (self.w, self.h), (0, 0, 0, 0))
@@ -158,8 +163,14 @@ def render(theme, rows, message, height, hover=False, background=False):
     light = light_theme()
     ink = (0, 0, 0) if light else (255, 255, 255)
     draw = {"led": render_led, "minimal": render_minimal}.get(theme, render_clock)
-    content = draw(rows, message, height, k, ink, light)
-    w = content.width
+    return finish(draw(rows, message, height, k, ink, light), hover, background)
+
+
+def finish(content, hover=False, background=False):
+    """Put content on a clickable, optionally highlighted base."""
+    w, height = content.size
+    k = height / 48
+    ink = (0, 0, 0) if light_theme() else (255, 255, 255)
     out = Image.new("RGBA", (w, height), (0, 0, 0, 1))  # alpha 1 keeps the whole area clickable
     if hover or background:
         p = Painter(w, height)
@@ -169,6 +180,71 @@ def render(theme, rows, message, height, hover=False, background=False):
         out.alpha_composite(p.compose(0))
     out.alpha_composite(content)
     return out
+
+
+def countdown_card(row, height, page=0, pages=1):
+    """One train, full size, in the spirit of the MTA countdown clocks."""
+    k = height / 48
+    light = light_theme()
+    ink = (0, 0, 0) if light else (255, 255, 255)
+    w = round(COUNTDOWN_W * k)
+    route, dest, mins, stale = row
+    fade = 0.5 if stale else 1.0
+    p = Painter(w, height)
+    pad, d = 10 * k, 26 * k
+    cy = height / 2
+    base = cy + 5.5 * k  # shared baseline for every word on the line
+    p.bullet(route, pad + d / 2, cy, d, fade)
+    num_f, unit_f, dest_f = font("Semibold", round(19 * k)), font("Regular", round(12 * k)), \
+        font("Semibold", round(14 * k))
+    right = w - (15 * k if pages > 1 else 10 * k)
+    if mins == 0:
+        p.text((right, base), "now", font("Semibold", round(16 * k)), ink, fade, "rs")
+        time_w = font("Semibold", round(16 * k)).getlength("now")
+    else:
+        unit = " min"
+        p.text((right, base), unit, unit_f, ink, 0.6 * fade, "rs")
+        p.text((right - unit_f.getlength(unit), base), str(min(mins, 99)), num_f, ink, fade, "rs")
+        time_w = unit_f.getlength(unit) + num_f.getlength(str(min(mins, 99)))
+    dest_x = pad + d + 10 * k
+    dest_max = right - time_w - 10 * k - dest_x
+    p.text((dest_x, base), fit(dest, dest_f, dest_max), dest_f, ink, 0.95 * fade, "ls")
+    if pages > 1:  # a quiet pager: which of the upcoming trains this is
+        gap, r = 6 * k, 1.6 * k
+        x = w - 6 * k
+        top = cy - gap * (pages - 1) / 2
+        for i in range(pages):
+            y = top + i * gap
+            p.shape(lambda g, s, y=y: g.ellipse([(x - r) * s, (y - r) * s, (x + r) * s, (y + r) * s], fill=255),
+                    ink, 0.9 if i == page else 0.28, shadow=False)
+    return p.compose(0 if light else 0.5)
+
+
+def countdown_message(message, height):
+    k = height / 48
+    light = light_theme()
+    ink = (0, 0, 0) if light else (255, 255, 255)
+    return message_only(message, height, k, ink, light, round(COUNTDOWN_W * k))
+
+
+def shifted(img, dy, opacity):
+    """img moved vertically by dy pixels and faded, on a same-size transparent canvas."""
+    w, h = img.size
+    out = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    dy = int(round(dy))
+    if abs(dy) >= h or opacity <= 0:
+        return out
+    if opacity < 1:
+        img = img.copy()
+        img.putalpha(img.getchannel("A").point(lambda v: int(v * opacity)))
+    if dy >= 0:
+        out.alpha_composite(img.crop((0, 0, w, h - dy)), (0, dy))
+    else:
+        out.alpha_composite(img.crop((0, -dy, w, h)), (0, 0))
+    return out
+
+
+COUNTDOWN_W = 238
 
 
 def message_only(message, height, k, ink, light, width):
@@ -206,11 +282,11 @@ def render_minimal(rows, message, height, k, ink, light):
     if message:
         return message_only(message, height, k, ink, light, round(150 * k))
     strong, body = font("Semibold", round(13 * k)), font("Regular", round(11 * k))
-    d, ch, gap, pad = 18 * k, 28 * k, 6 * k, 6 * k
+    d, ch, gap, pad = 18 * k, 28 * k, 10 * k, 6 * k
     chips = []
     for route, dest, mins, stale in rows:
         num, unit = ("now", "") if mins == 0 else (str(min(mins, 99)), " min")
-        cw = 5 * k + d + 7 * k + strong.getlength(num) + body.getlength(unit) + 11 * k
+        cw = 5 * k + d + 8 * k + strong.getlength(num) + body.getlength(unit) + 13 * k
         chips.append((route, num, unit, stale, cw))
     w = round(pad * 2 + sum(c[4] for c in chips) + gap * (len(chips) - 1))
     p = Painter(w, height)
@@ -222,7 +298,7 @@ def render_minimal(rows, message, height, k, ink, light):
             [x0 * s, top * s, (x0 + cw) * s, (top + ch) * s], radius=ch / 2 * s, fill=255),
             ink, 0.13 * fade, shadow=False)
         p.bullet(route, x0 + 5 * k + d / 2, cy, d, fade)
-        tx = x0 + 5 * k + d + 7 * k
+        tx = x0 + 5 * k + d + 8 * k
         p.text((tx, cy), num, strong, ink, fade)
         if unit:
             p.text((tx + strong.getlength(num), cy + 0.5 * k), unit, body, ink, 0.6 * fade)
@@ -683,6 +759,13 @@ def present_layered(hwnd, img):
     user32.ReleaseDC(None, screen)
 
 
+def animations_enabled():
+    """Respect Settings > Accessibility > Visual effects > Animation effects."""
+    on = wintypes.BOOL(True)
+    user32.SystemParametersInfoW(0x1042, 0, ctypes.byref(on), 0)  # SPI_GETCLIENTAREAANIMATION
+    return bool(on.value)
+
+
 def rect_of(hwnd):
     r = wintypes.RECT()
     user32.GetWindowRect(hwnd, ctypes.byref(r))
@@ -754,8 +837,12 @@ class App:
         self.size = (1, 1)
         self.hover = False
         self.picker = None
+        self.settings = None
         self.drag = None
         self.hidden = False
+        self.page = 0
+        self.anim = None  # (old_card, start_time) while a slide is running
+        self.cards = {}
 
         s = self.surface
         s.bind("<ButtonPress-1>", self._press)
@@ -780,6 +867,7 @@ class App:
             self.root.after(300, self.open_picker)
         self._tick()
         self._guard()
+        self.root.after(self._cycle_ms(), self._cycle)
 
     # -- config
     def _load_cfg(self):
@@ -799,7 +887,11 @@ class App:
         return self.complexes.get(self.cfg.get("station"))
 
     # -- drawing
-    def rows(self):
+    @property
+    def theme(self):
+        return self.cfg.get("theme", DEFAULT_THEME)
+
+    def rows(self, limit=2):
         station = self.station
         if not station:
             return None, "Choose a station"
@@ -809,7 +901,9 @@ class App:
         now = time.time()
         live = [a for a in arrivals if a[2] >= now - 20]
         mode = self.cfg.get("dir", "B")
-        if mode == "B":
+        if self.theme == "countdown":  # the next few trains, soonest first: the next few trains, soonest first
+            picks = [a for a in live if mode == "B" or a[0].endswith(mode)][:limit]
+        elif mode == "B":
             picks = [next((a for a in live if a[0].endswith(d)), None) for d in "NS"]
             picks = [p for p in picks if p] or live[:2]
         else:
@@ -825,13 +919,73 @@ class App:
         return rows, None
 
     def draw(self):
-        rows, message = self.rows()
-        img = render(self.cfg.get("theme", "clock"), rows, message, self._bar_height(),
-                     hover=self.hover or bool(self.drag), background=self.cfg.get("background", False))
+        hover, background = self.hover or bool(self.drag), self.cfg.get("background", False)
+        if self.theme == "countdown":
+            img = finish(self._countdown_frame(), hover, background)
+        else:
+            rows, message = self.rows()
+            img = render(self.theme, rows, message, self._bar_height(), hover=hover, background=background)
         if img.size != self.size:
             self.size = img.size
             self._place()
         present_layered(self._hwnd(), img)
+
+    # -- countdown: one train at a time, sliding to the next
+    def _card(self, row, page, pages):
+        key = (row, page, pages, self._bar_height(), light_theme())
+        if key not in self.cards:
+            if len(self.cards) > 64:
+                self.cards.clear()
+            self.cards[key] = countdown_card(row, self._bar_height(), page, pages)
+        return self.cards[key]
+
+    def _current_card(self):
+        rows, message = self.rows(limit=self.cfg.get("cycle_count", 4))
+        if message:
+            self.page = 0
+            return countdown_message(message, self._bar_height())
+        self.page %= len(rows)
+        return self._card(rows[self.page], self.page, len(rows))
+
+    def _countdown_frame(self):
+        card = self._current_card()
+        if not self.anim:
+            return card
+        old, start = self.anim
+        t = min(1.0, (time.perf_counter() - start) * 1000 / SLIDE_MS)
+        if t >= 1 or old.size != card.size:
+            self.anim = None
+            return card
+        e = 1 - (1 - t) ** 3  # ease out
+        travel = card.height * 0.55
+        frame = shifted(old, -e * travel, 1 - e)
+        frame.alpha_composite(shifted(card, (1 - e) * travel, e))
+        return frame
+
+    def _advance(self):
+        rows, message = self.rows(limit=self.cfg.get("cycle_count", 4))
+        if message or len(rows) < 2:
+            return
+        old = self._current_card()
+        self.page = (self.page + 1) % len(rows)
+        if self.cfg.get("animate", True) and animations_enabled():
+            self.anim = (old, time.perf_counter())
+            self._animate()
+        else:
+            self.draw()
+
+    def _animate(self):
+        self.draw()
+        if self.anim:
+            self.root.after(15, self._animate)
+
+    def _cycle_ms(self):
+        return int(self.cfg.get("cycle_seconds", 5) * 1000)
+
+    def _cycle(self):
+        if self.theme == "countdown" and not self.hover and not self.drag and not self.hidden:
+            self._advance()
+        self.root.after(self._cycle_ms(), self._cycle)
 
     def _set_hover(self, on):
         self.hover = on
@@ -842,7 +996,8 @@ class App:
         return (g[3] - g[1]) if g else 48
 
     def _tick(self):
-        self.draw()
+        if not self.anim:
+            self.draw()
         self.root.after(2000, self._tick)
 
     # -- placement
@@ -899,7 +1054,11 @@ class App:
             self.cfg["offset"] = g[2] - self.root.winfo_x()
             self._save_cfg()
         elif self.drag:
-            self.feed.refresh()
+            self.drag = None
+            if self.theme == "countdown":
+                self._advance()  # click shows the next train
+            else:
+                self.feed.refresh()
         self.drag = None
         self.draw()
 
@@ -910,41 +1069,47 @@ class App:
             m.add_command(label=f"{st['name']}  ·  {' '.join(st['routes'])}", state="disabled")
             m.add_separator()
             var = tk.StringVar(value=self.cfg.get("dir", "B"))
-            for code, label in (("N", st["north"] or "Uptown"), ("S", st["south"] or "Downtown"),
-                                ("B", "Both directions")):
+            for code, label in self._directions():
                 m.add_radiobutton(label=label, value=code, variable=var,
                                   command=lambda c=code: self._set("dir", c))
             m.add_separator()
         themes = tk.Menu(m, tearoff=0)
-        tvar = tk.StringVar(value=self.cfg.get("theme", "clock"))
+        tvar = tk.StringVar(value=self.theme)
         for code, label in THEMES:
             themes.add_radiobutton(label=label, value=code, variable=tvar,
                                    command=lambda c=code: self._set("theme", c))
-        themes.add_separator()
-        bg = tk.BooleanVar(value=self.cfg.get("background", False))
-        themes.add_checkbutton(label="Show background", variable=bg,
-                               command=lambda: self._set("background", bg.get()))
         m.add_cascade(label="Theme", menu=themes)
         m.add_command(label="Change station…", command=self.open_picker)
+        m.add_command(label="Settings…", command=self.open_settings)
         m.add_command(label="Refresh now", command=self.feed.refresh)
-        if "offset" in self.cfg:
-            m.add_command(label="Reset position", command=self._reset_pos)
-        auto = tk.BooleanVar(value=autostart_enabled())
-        m.add_checkbutton(label="Start with Windows", variable=auto,
-                          command=lambda: set_autostart(auto.get()))
         m.add_separator()
         m.add_command(label="Quit", command=self.root.destroy)
         m.tk_popup(e.x_root, e.y_root)
 
+    def _directions(self):
+        st = self.station or {}
+        return (("N", st.get("north") or "Uptown"), ("S", st.get("south") or "Downtown"),
+                ("B", "Both"))
+
     def _set(self, key, value):
         self.cfg[key] = value
         self._save_cfg()
+        self.anim = None
         self.draw()
+        if self.settings and self.settings.winfo_exists():
+            self.settings.refresh()
 
     def _reset_pos(self):
         self.cfg.pop("offset", None)
         self._save_cfg()
         self._place()
+
+    # -- settings
+    def open_settings(self):
+        if self.settings and self.settings.winfo_exists():
+            self.settings.lift()
+            return
+        self.settings = SettingsWindow(self)
 
     # -- station picker
     def open_picker(self):
@@ -996,6 +1161,8 @@ class App:
             self.feed.set_station(c)
             self.draw()
             p.destroy()
+            if self.settings and self.settings.winfo_exists():
+                self.settings.refresh()
 
         def move(delta):
             sel = lb.curselection()
@@ -1027,6 +1194,146 @@ class App:
 
     def run(self):
         self.root.mainloop()
+
+
+def palette():
+    if light_theme():
+        return dict(bg="#f3f3f3", card="#ffffff", line="#e5e5e5", fg="#1a1a1a", sub="#5f5f5f",
+                    accent="#005fb8", on_accent="#ffffff", off="#8a8a8a", dark=False)
+    return dict(bg="#202020", card="#2b2b2b", line="#1d1d1d", fg="#ffffff", sub="#a6a6a6",
+                accent="#60cdff", on_accent="#000000", off="#9a9a9a", dark=True)
+
+
+class SettingsWindow(tk.Toplevel):
+    """Every option in one place, styled after Windows 11 Settings. Changes apply at once."""
+
+    def __init__(self, app):
+        super().__init__(app.root)
+        self.app = app
+        self.c = c = palette()
+        self.title("Trainbar settings")
+        self.configure(bg=c["bg"], padx=20, pady=18)
+        self.attributes("-topmost", True)
+        self.resizable(False, False)
+        self.f = {
+            "title": ("Segoe UI Variable Display", 15, "bold"),
+            "head": ("Segoe UI Variable Text", 10, "bold"),
+            "body": ("Segoe UI Variable Text", 10),
+            "small": ("Segoe UI Variable Text", 9),
+        }
+        self.bind("<Escape>", lambda e: self.destroy())
+        self.body = tk.Frame(self, bg=c["bg"])
+        self.body.pack(fill="both")
+        self.refresh()
+        self.update_idletasks()
+        dark = ctypes.c_int(1 if c["dark"] else 0)
+        try:
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(user32.GetParent(self.winfo_id()), 20,
+                                                       ctypes.byref(dark), ctypes.sizeof(dark))
+        except OSError:
+            pass
+        x = min(app.root.winfo_x(), self.winfo_screenwidth() - self.winfo_width() - 12)
+        y = app.root.winfo_y() - self.winfo_height() - 48
+        self.geometry(f"+{max(0, x)}+{max(0, y)}")
+        self.focus_force()
+
+    # building blocks
+    def section(self, title):
+        tk.Label(self.body, text=title, font=self.f["head"], bg=self.c["bg"], fg=self.c["fg"],
+                 anchor="w").pack(fill="x", pady=(14, 6))
+        card = tk.Frame(self.body, bg=self.c["card"])
+        card.pack(fill="x")
+        return card
+
+    def row(self, card, label, hint=None):
+        if card.winfo_children():
+            tk.Frame(card, bg=self.c["line"], height=1).pack(fill="x")
+        r = tk.Frame(card, bg=self.c["card"], padx=14, pady=10)
+        r.pack(fill="x")
+        text = tk.Frame(r, bg=self.c["card"])
+        text.pack(side="left", fill="x", expand=True)
+        tk.Label(text, text=label, font=self.f["body"], bg=self.c["card"], fg=self.c["fg"],
+                 anchor="w").pack(fill="x")
+        if hint:
+            tk.Label(text, text=hint, font=self.f["small"], bg=self.c["card"], fg=self.c["sub"],
+                     anchor="w", justify="left", wraplength=230).pack(fill="x")
+        right = tk.Frame(r, bg=self.c["card"])
+        right.pack(side="right")
+        return right
+
+    def button(self, parent, text, command, selected=False):
+        c = self.c
+        bg, fg = (c["accent"], c["on_accent"]) if selected else (c["bg"], c["fg"])
+        b = tk.Label(parent, text=text, font=self.f["body"], bg=bg, fg=fg, padx=10, pady=4, cursor="hand2")
+        b.bind("<Button-1>", lambda e: command())
+        return b
+
+    def segmented(self, parent, options, current, key):
+        for code, label in options:
+            self.button(parent, label, lambda v=code: self.app._set(key, v),
+                        selected=code == current).pack(side="left", padx=(4, 0))
+
+    def stepper(self, parent, key, value, lo, hi, unit):
+        def change(delta):
+            self.app._set(key, max(lo, min(hi, value + delta)))
+        self.button(parent, "−", lambda: change(-1)).pack(side="left")
+        tk.Label(parent, text=f"{value} {unit}", font=self.f["body"], bg=self.c["card"], fg=self.c["fg"],
+                 width=6).pack(side="left")
+        self.button(parent, "+", lambda: change(1)).pack(side="left")
+
+    def toggle(self, parent, value, command):
+        c = self.c
+        cv = tk.Canvas(parent, width=40, height=20, bg=c["card"], highlightthickness=0, cursor="hand2")
+        fill = c["accent"] if value else c["card"]
+        outline = c["accent"] if value else c["off"]
+        cv.create_oval(1, 1, 19, 19, fill=fill, outline=outline)
+        cv.create_oval(21, 1, 39, 19, fill=fill, outline=outline)
+        cv.create_rectangle(10, 1, 30, 19, fill=fill, outline=fill)
+        cv.create_line(10, 1, 30, 1, fill=outline)
+        cv.create_line(10, 19, 30, 19, fill=outline)
+        knob = (24, 5, 34, 15) if value else (6, 5, 16, 15)
+        cv.create_oval(*knob, fill=c["on_accent"] if value else c["off"], outline="")
+        cv.bind("<Button-1>", lambda e: command(not value))
+        cv.pack()
+
+    def refresh(self):
+        """Rebuild from the current config so the window always shows the truth."""
+        for w in self.body.winfo_children():
+            w.destroy()
+        app, cfg, c = self.app, self.app.cfg, self.c
+        tk.Label(self.body, text="Trainbar", font=self.f["title"], bg=c["bg"], fg=c["fg"],
+                 anchor="w").pack(fill="x")
+
+        card = self.section("Station")
+        st = app.station
+        right = self.row(card, st["name"] if st else "No station yet",
+                         "  ".join(st["routes"]) if st else "Pick the stop you leave from")
+        self.button(right, "Change…", app.open_picker).pack()
+        right = self.row(card, "Direction")
+        self.segmented(right, app._directions(), cfg.get("dir", "B"), "dir")
+
+        card = self.section("Look")
+        right = self.row(card, "Theme")
+        self.segmented(right, THEMES, app.theme, "theme")
+        right = self.row(card, "Show background", "Otherwise it appears only when you point at it")
+        self.toggle(right, cfg.get("background", False), lambda v: app._set("background", v))
+
+        if app.theme == "countdown":
+            card = self.section("Countdown")
+            right = self.row(card, "Trains to show", "One at a time, soonest first")
+            self.stepper(right, "cycle_count", cfg.get("cycle_count", 4), 1, 8, "")
+            right = self.row(card, "Time on each train")
+            self.stepper(right, "cycle_seconds", cfg.get("cycle_seconds", 5), 2, 30, "s")
+            right = self.row(card, "Slide animation", "Also follows the Windows animation setting")
+            self.toggle(right, cfg.get("animate", True), lambda v: app._set("animate", v))
+
+        card = self.section("System")
+        right = self.row(card, "Start with Windows", "Copies Trainbar to %LOCALAPPDATA%\\Trainbar")
+        self.toggle(right, autostart_enabled(), lambda v: (set_autostart(v), self.refresh()))
+        right = self.row(card, "Position", "Drag the widget sideways to move it")
+        self.button(right, "Reset", lambda: (app._reset_pos(), self.refresh())).pack()
+        right = self.row(card, "Data", "MTA real-time feeds, checked every 30 seconds")
+        self.button(right, "Refresh now", app.feed.refresh).pack()
 
 
 def main():
