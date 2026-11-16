@@ -2,7 +2,7 @@
 
 All notable changes to Trainbar. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [1.3.1] - 2026-11-16
 
 ### Changed
 - The Countdown slide is slower and smoother: 900 ms, eased in and out, with sub-pixel motion instead of whole-pixel steps.
@@ -58,6 +58,7 @@ All notable changes to Trainbar. The format follows [Keep a Changelog](https://k
 
 - First release: a dot-matrix display of live NYC subway arrivals on the Windows taskbar.
 
+[1.3.1]: https://github.com/thedevmark/trainbar/releases/tag/v1.3.1
 [1.3.0]: https://github.com/thedevmark/trainbar/releases/tag/v1.3.0
 [1.2.0]: https://github.com/thedevmark/trainbar/releases/tag/v1.2.0
 [1.1.0]: https://github.com/thedevmark/trainbar/releases/tag/v1.1.0

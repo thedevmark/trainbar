@@ -26,7 +26,7 @@ from ctypes import wintypes
 
 from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont, ImageTk
 
-__version__ = "1.3.0"
+__version__ = "1.3.1"
 APP = "Trainbar"
 HOMEPAGE = "https://github.com/thedevmark/trainbar"
 DATA_DIR = os.path.join(os.environ["APPDATA"], APP)
