@@ -2,6 +2,13 @@
 
 All notable changes to Trainbar. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+- The Countdown slide is slower and smoother: 900 ms, eased in and out, with sub-pixel motion instead of whole-pixel steps.
+- Spacing in every theme follows a 4 px grid: 12 px at the edges, 8 px between a bullet and its text, 16 px between separate pieces.
+- The README shows a rendered image of each theme on a dark and a light taskbar, made by `tools/render_theme_images.py`.
+
 ## [1.3.0] - 2026-11-16
 
 ### Added

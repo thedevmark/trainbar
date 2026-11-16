@@ -4,7 +4,7 @@
 
 Live NYC subway arrivals on your Windows taskbar, set to look like part of Windows.
 
-![Trainbar on the Windows 11 taskbar, showing the next L train at Bedford Av](docs/screenshot.png)
+![Trainbar's Countdown theme on a dark and a light Windows 11 taskbar](docs/theme-countdown.png)
 
 Pick your station once. Trainbar shows one train at a time at full size: the line's bullet, where the train is headed, and how many minutes away it is. Every few seconds the next train slides up into place, and small dots show where you are in the list. When a train is pulling in, the minutes read `now`.
 
@@ -14,12 +14,33 @@ The background is transparent, so it works on the standard taskbar and on see-th
 
 Right-click and open **Theme** to switch.
 
-| Theme | Look |
-| --- | --- |
-| Countdown | One train at a time, large, sliding to the next. The default. |
-| Clock | Two lines in Segoe UI Variable, sized like the taskbar clock. |
-| LED | A dot-matrix sign with glowing dots and no box behind it. |
-| Minimal | Only the line bullet and the minutes, small and close together. |
+### Countdown
+
+One train at a time, large, sliding to the next. The default.
+
+![Countdown theme](docs/theme-countdown.png)
+
+![The slide between two trains](docs/slide-preview.gif)
+
+### Clock
+
+Two lines in Segoe UI Variable, sized like the taskbar clock.
+
+![Clock theme](docs/theme-clock.png)
+
+### LED
+
+A dot-matrix sign with glowing dots and no box behind it.
+
+![LED theme](docs/theme-led.png)
+
+### Minimal
+
+Only the line bullet and the minutes, small and close together.
+
+![Minimal theme](docs/theme-minimal.png)
+
+The theme images are drawn by the app's own code; run `python tools/render_theme_images.py trainbar.pyw docs` to make them again.
 
 Express trains (such as the 6 and 7 express) get a diamond instead of a circle.
 

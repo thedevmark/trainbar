@@ -9,6 +9,7 @@ import csv
 import ctypes
 import gzip
 import json
+import math
 import os
 import shutil
 import sys
@@ -65,7 +66,7 @@ LED_COLORS = {**ROUTE_COLORS, **{r: (40, 110, 255) for r in ("A", "C", "E", "SIR
 DARK_LETTER = set("NQRW")
 THEMES = [("countdown", "Countdown"), ("clock", "Clock"), ("led", "LED"), ("minimal", "Minimal")]
 DEFAULT_THEME = "countdown"
-SLIDE_MS = 420
+SLIDE_MS = 900
 
 FONT_FILE = "C:/Windows/Fonts/SegUIVar.ttf"
 FALLBACK_FONTS = {"Regular": "segoeui.ttf", "Semibold": "seguisb.ttf", "Bold": "segoeuib.ttf"}
@@ -215,6 +216,13 @@ def finish(content, hover=False, background=False):
     return out
 
 
+# Spacing follows a 4 px grid (in taskbar pixels, scaled by k): 4 inside an item,
+# 8 between a bullet and its text, 16 between separate pieces, 12 at the outer edges.
+PAD = 12
+PAGER_R = 1.6
+PAGER_W = 8 + 2 * PAGER_R + 8  # gap before the pager dots, the dots, the edge
+
+
 def countdown_fonts(k):
     return (font("Semibold", round(19 * k)), font("Regular", round(12 * k)), font("Semibold", round(14 * k)),
             font("Semibold", round(16 * k)))
@@ -228,8 +236,8 @@ def countdown_width(rows, height):
     for _route, dest, mins, _stale in rows:
         time_w = now_f.getlength("now") if mins == 0 else \
             num_f.getlength(str(min(mins, 99))) + unit_f.getlength(" min")
-        widths.append(10 * k + 26 * k + 10 * k + min(dest_f.getlength(dest), 150 * k) + 16 * k + time_w
-                      + (15 * k if len(rows) > 1 else 10 * k))
+        widths.append(PAD * k + 24 * k + 8 * k + min(dest_f.getlength(dest), 150 * k) + 16 * k + time_w
+                      + (PAGER_W if len(rows) > 1 else PAD) * k)
     return round(max(widths + [140 * k]))
 
 
@@ -242,12 +250,12 @@ def countdown_card(row, height, page=0, pages=1, width=None):
     route, dest, mins, stale = row
     fade = 0.5 if stale else 1.0
     p = Painter(w, height)
-    pad, d = 10 * k, 26 * k
+    pad, d = PAD * k, 24 * k
     cy = height / 2
     base = cy + 5.5 * k  # shared baseline for every word on the line
     p.bullet(route, pad + d / 2, cy, d, fade)
     num_f, unit_f, dest_f, now_f = countdown_fonts(k)
-    right = w - (15 * k if pages > 1 else 10 * k)
+    right = w - (PAGER_W if pages > 1 else PAD) * k
     if mins == 0:
         p.text((right, base), "now", now_f, ink, fade, "rs")
         time_w = now_f.getlength("now")
@@ -256,12 +264,12 @@ def countdown_card(row, height, page=0, pages=1, width=None):
         p.text((right, base), unit, unit_f, ink, 0.6 * fade, "rs")
         p.text((right - unit_f.getlength(unit), base), str(min(mins, 99)), num_f, ink, fade, "rs")
         time_w = unit_f.getlength(unit) + num_f.getlength(str(min(mins, 99)))
-    dest_x = pad + d + 10 * k
+    dest_x = pad + d + 8 * k
     dest_max = right - time_w - 16 * k - dest_x
     p.text((dest_x, base), fit(dest, dest_f, dest_max), dest_f, ink, 0.95 * fade, "ls")
     if pages > 1:  # a quiet pager: which of the upcoming trains this is
-        gap, r = 6 * k, 1.6 * k
-        x = w - 6 * k
+        gap, r = 6 * k, PAGER_R * k
+        x = w - (8 + PAGER_R) * k
         top = cy - gap * (pages - 1) / 2
         for i in range(pages):
             y = top + i * gap
@@ -278,20 +286,16 @@ def countdown_message(message, height):
 
 
 def shifted(img, dy, opacity):
-    """img moved vertically by dy pixels and faded, on a same-size transparent canvas."""
+    """img moved vertically by dy pixels (sub-pixel) and faded, on a same-size transparent canvas."""
     w, h = img.size
-    out = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-    dy = int(round(dy))
     if abs(dy) >= h or opacity <= 0:
-        return out
+        return Image.new("RGBA", (w, h), (0, 0, 0, 0))
     if opacity < 1:
         img = img.copy()
         img.putalpha(img.getchannel("A").point(lambda v: int(v * opacity)))
-    if dy >= 0:
-        out.alpha_composite(img.crop((0, 0, w, h - dy)), (0, dy))
-    else:
-        out.alpha_composite(img.crop((0, -dy, w, h)), (0, 0))
-    return out
+    # Premultiplied so the bilinear blend between rows never darkens the edges of the text.
+    return img.convert("RGBa").transform((w, h), Image.AFFINE, (1, 0, 0, 0, 1, -dy),
+                                         resample=Image.BILINEAR).convert("RGBA")
 
 
 def message_only(message, height, k, ink, light, width):
@@ -303,16 +307,16 @@ def message_only(message, height, k, ink, light, width):
 def render_clock(rows, message, height, k, ink, light):
     """Two quiet lines, set like the Windows 11 taskbar clock."""
     body, strong = font("Regular", round(12 * k)), font("Semibold", round(12 * k))
-    pad, d, unit = 12 * k, 16 * k, " min"
+    pad, d, unit = PAD * k, 16 * k, " min"
     if message:
         return message_only(message, height, k, ink, light, round(150 * k))
     dest_w = max(min(body.getlength(r[1]), 130 * k) for r in rows)
-    w = round(pad + d + 8 * k + dest_w + 14 * k + strong.getlength("99") + body.getlength(unit) + pad)
+    w = round(pad + d + 8 * k + dest_w + 16 * k + strong.getlength("99") + body.getlength(unit) + pad)
     p = Painter(w, height)
     right = w - pad
     dest_x = pad + d + 8 * k
-    dest_max = right - dest_x - strong.getlength("99") - body.getlength(unit) - 8 * k
-    centers = [height / 2 - 8.5 * k, height / 2 + 8.5 * k] if len(rows) > 1 else [height / 2]
+    dest_max = right - dest_x - strong.getlength("99") - body.getlength(unit) - 16 * k
+    centers = [height / 2 - 8 * k, height / 2 + 8 * k] if len(rows) > 1 else [height / 2]
     for (route, dest, mins, stale), cy in zip(rows, centers, strict=False):
         fade = 0.5 if stale else 1.0
         p.bullet(route, pad + d / 2, cy, d, fade)
@@ -330,7 +334,7 @@ def render_minimal(rows, message, height, k, ink, light):
     if message:
         return message_only(message, height, k, ink, light, round(110 * k))
     strong, body = font("Semibold", round(12 * k)), font("Regular", round(11 * k))
-    d, inner, gap, pad = 14 * k, 4 * k, 12 * k, 8 * k
+    d, inner, gap, pad = 16 * k, 4 * k, 16 * k, PAD * k
     items = []
     for route, _dest, mins, stale in rows:
         num, unit = ("now", "") if mins == 0 else (str(min(mins, 99)), "m")
@@ -1059,8 +1063,8 @@ class App:
         if t >= 1 or old.size != card.size:
             self.anim = None
             return card
-        e = 1 - (1 - t) ** 3  # ease out
-        travel = card.height * 0.55
+        e = (1 - math.cos(math.pi * t)) / 2  # ease in and out
+        travel = card.height * 0.45
         frame = shifted(old, -e * travel, 1 - e)
         frame.alpha_composite(shifted(card, (1 - e) * travel, e))
         return frame
