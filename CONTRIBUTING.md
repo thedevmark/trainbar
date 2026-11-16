@@ -24,6 +24,8 @@ CI runs both on Windows with Python 3.10 and 3.13. The tests need no network and
 
 For visual changes, run the widget and look at it on a dark and a light taskbar, and at 100% and 150% display scaling if you can.
 
+The README theme images come from the app's own drawing code. After a visual change, make them again with `python tools/render_theme_images.py trainbar.pyw docs`.
+
 ## How the code is laid out
 
 `trainbar.pyw`, top to bottom:

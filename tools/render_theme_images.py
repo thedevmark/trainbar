@@ -25,8 +25,6 @@ BW = W - 120   # visible bar width
 ROWS = [("Q", "96 St", 3, False), ("N", "Astoria-Ditmars Blvd", 6, False),
         ("R", "Forest Hills-71 Av", 9, False), ("W", "Astoria-Ditmars Blvd", 14, False)]
 ICONS = ImageFont.truetype("C:/Windows/Fonts/SegoeIcons.ttf", 16 * S)
-TITLE = tb.font("Semibold", 44)
-CAPTION = tb.font("Regular", 24)
 
 
 def wallpaper(w, h):
@@ -63,21 +61,15 @@ def taskbar(theme, light, BW):
     return bar
 
 
-def card(theme, label, caption):
+def card(theme):
+    """The dark and the light taskbar, nothing else: the README names and describes each theme."""
     tb._theme_cache[:] = [1e18, False]
-    # 8 px grid. Proximity: title and caption are one unit (16 apart); the two bars are
-    # one unit (16 apart); the units are separated by 48; one 64 margin on every side.
-    M, U = 64, 8
+    M, U = 64, 8  # 8 px grid, one 64 margin on every side, the two bars 16 apart
     BW = max(W - 2 * M, PADL + widget_for(theme).width + TRAY)
     W_ = BW + 2 * M
-    title_top = M
-    cap_top = title_top + TITLE.size + 2 * U
-    top = cap_top + CAPTION.size + 6 * U
+    top = M
     h = top + BAR * 2 + 2 * U + M
     img = wallpaper(W_, h).convert("RGBA")
-    d = ImageDraw.Draw(img)
-    d.text((M, title_top), label, font=TITLE, fill=(255, 255, 255), anchor="lt")
-    d.text((M, cap_top), caption, font=CAPTION, fill=(255, 255, 255, 200), anchor="lt")
     for i, light in enumerate((False, True)):
         y = top + i * (BAR + 2 * U)
         bar = taskbar(theme, light, BW)
@@ -91,12 +83,7 @@ def card(theme, label, caption):
     return img if W_ == W else img.resize((W, round(h * W / W_)), Image.LANCZOS)
 
 
-THEMES = {
-    "countdown": ("Countdown", "One train at a time, full size, sliding to the next. The default."),
-    "clock": ("Clock", "Two quiet lines, set like the taskbar clock."),
-    "led": ("LED", "A dot-matrix sign with glowing dots and no box."),
-    "minimal": ("Minimal", "Only the bullet and the minutes."),
-}
-for code, (label, caption) in THEMES.items():
-    card(code, label, caption).save(OUT / f"theme-{code}.png", optimize=True)
+THEMES = ["countdown", "clock", "led", "minimal"]
+for code in THEMES:
+    card(code).save(OUT / f"theme-{code}.png", optimize=True)
 print("RESULT", ", ".join(f"theme-{c}.png" for c in THEMES))

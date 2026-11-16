@@ -40,8 +40,6 @@ Only the line bullet and the minutes, small and close together.
 
 ![Minimal theme](docs/theme-minimal.png)
 
-The theme images are drawn by the app's own code; run `python tools/render_theme_images.py trainbar.pyw docs` to make them again.
-
 Express trains (such as the 6 and 7 express) get a diamond instead of a circle.
 
 ## Settings
